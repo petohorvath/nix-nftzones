@@ -203,8 +203,12 @@
 
   The table type is not covered — it has no enclosing key by the
   time the pipeline sees it (`compile` receives an already-
-  evaluated value); its invariant is enforced by an `apply` on
-  `types.table`'s `name` option instead.
+  evaluated value). Its `name == key` invariant is instead kept by
+  the module / `mkTable` boundary, which overrides the table's
+  `name` with the real `networking.nftzones.tables` attr key. An
+  `apply` on `types.table`'s `name` couldn't stand in: it sees the
+  lexical submodule key, which for a standalone / facade table is
+  the option path, not the tables key it compiles under.
 
   Each error is `lib.nameValuePair "nameKeyMismatch" <message>`.
 

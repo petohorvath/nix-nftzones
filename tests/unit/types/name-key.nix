@@ -12,10 +12,13 @@
        This is the regression guard: it throws on the pre-fix
        `readOnly = true` code and passes now.
 
-    2. Invariant preserved: an explicit `name` that differs from the
-       enclosing key is rejected — by
-       `internal.normalize.checkNameKeyMismatch` for the keyed object
-       types, and by the `apply` on `types.table.name` for the table.
+    2. Invariant preserved: for the keyed object types, an explicit
+       `name` that differs from the enclosing key is rejected by
+       `internal.normalize.checkNameKeyMismatch`. The table's name is
+       instead a projection of its real attr key, derived at the
+       module / `mkTable` boundary — a divergent `name` is overridden
+       by the key, not rejected, so a facade can forward a whole
+       evaluated table under any key.
 
   Same `testFoo = { expr; expected; }` shape as every other unit
   test; aggregated by `tests/unit/default.nix`.
@@ -127,7 +130,42 @@ in
     expected = "z";
   };
 
-  # ===== invariant: explicit name != key is rejected =====
+  # A whole evaluated table forwarded between two *differently-keyed*
+  # `attrsOf table` options (the facade / copy pattern). Pre-fix, the
+  # table `name` `apply` compared the source's key-derived name
+  # ('src') against the destination key ('dst') and threw; post-fix
+  # (apply dropped) the copy resolves. A plain `attrsOf` is not a
+  # compile boundary, so no key-projection happens here — the
+  # source's `.name` survives — but resolving without a throw is the
+  # property under test. The module / `mkTable` boundary is what
+  # re-projects the name to the key (see the table tests below).
+  testCopySafeTableDifferentKey = {
+    expr =
+      (lib.evalModules {
+        modules = [
+          {
+            options.a = lib.mkOption {
+              type = lib.types.attrsOf table;
+              default = { };
+            };
+            options.b = lib.mkOption {
+              type = lib.types.attrsOf table;
+              default = { };
+            };
+          }
+          (
+            { config, ... }:
+            {
+              a.src = { };
+              b.dst = config.a.src;
+            }
+          )
+        ];
+      }).config.b.dst.name;
+    expected = "src";
+  };
+
+  # ===== invariant: keyed object types reject explicit name != key =====
 
   # Keyed object types — caught by `checkNameKeyMismatch` in Phase 1.
   testNameKeyMismatchZoneThrows = {
@@ -174,15 +212,21 @@ in
     expected = false;
   };
 
-  # Table — caught by the `apply` on `types.table.name` (the table
-  # has no enclosing key by the time the pipeline sees it).
-  testNameKeyMismatchTableThrows = {
-    expr = evalFails (nftzones.mkTable "fw" { name = "other"; });
-    expected = true;
+  # ===== invariant: table name is a projection of its attr key =====
+
+  # Unlike the keyed object types above, the table's on-wire name is
+  # derived at the `mkTable` boundary rather than enforced per
+  # submodule. An explicit `name` that differs from the key is
+  # overridden by the key (so forwarding a whole evaluated table
+  # "just works"), not rejected.
+  testTableNameProjectedFromKey = {
+    expr = (nftzones.mkTable "fw" { name = "other"; }).name;
+    expected = "fw";
   };
 
-  testNameKeyMatchTableCompiles = {
-    expr = evalFails (nftzones.mkTable "fw" { name = "fw"; });
-    expected = false;
+  # A matching explicit name is equally fine — same projected result.
+  testTableNameMatchingKeyCompiles = {
+    expr = (nftzones.mkTable "fw" { name = "fw"; }).name;
+    expected = "fw";
   };
 }

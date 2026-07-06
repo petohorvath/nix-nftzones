@@ -56,9 +56,11 @@ let
     {
       inherit (table) family;
       # `tableValue` carries the user-shape with submodule defaults
-      # filled in; `table` is the compiled nftypes value which drops
-      # empty / null fields. Reading metadata from the user-shape
-      # keeps the prefix renderer predictable.
+      # filled in (its `name` already projected onto the attr key by
+      # the `tables` option's `apply`); `table` is the compiled
+      # nftypes value which drops empty / null fields. Reading
+      # metadata from the user-shape keeps the prefix renderer
+      # predictable.
       content = renderTableMetadata tableValue + renderTable table;
     }
   ) cfg.tables;
@@ -70,10 +72,28 @@ in
     tables = lib.mkOption {
       type = lib.types.attrsOf nftzones.types.table;
       default = { };
+      # Project every table's `name` onto its attribute key — the
+      # single source of truth for the table's identity. `name`
+      # defaults to the key already, but a whole evaluated table
+      # forwarded from a differently-keyed facade option
+      # (`options.myfw = mkOption { type = nftzones.types.table; };`
+      # then `tables.fw = config.myfw;`) carries the source's `name`
+      # ('myfw') as an explicit definition that would otherwise beat
+      # the key-derived default. Overriding here keeps
+      # `tables.<key>.name == <key>` for every reader — the compile
+      # pipeline, the on-wire ruleset, and introspection tools — so
+      # facades and whole-table copies "just work" without a
+      # per-submodule `apply` guard on the type (which couldn't see
+      # the real key). This is the `mapAttrs (key: t: t // { name =
+      # key; })` boundary the grouped object types get for free from
+      # their enclosing `attrsOf` key.
+      apply = lib.mapAttrs (key: tableValue: tableValue // { name = key; });
       description = ''
         Table bodies keyed by nftables table name. Each entry is
         compiled and translated into `networking.nftables.tables.<name>`
-        for activation.
+        for activation. A table's `name` is always its attribute key:
+        a value forwarded from a differently-keyed option is recompiled
+        under the key.
       '';
     };
 

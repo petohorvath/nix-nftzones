@@ -44,16 +44,20 @@ let
     by running it through `lib.evalModules`, using `name` as the
     option attribute key so the table's `name` field derives from
     the user's chosen value (the submodule's `default = name`
-    mechanism).
+    mechanism). The `name` arg is the authoritative on-wire table
+    name (this function is a compile boundary), so any `name` the
+    body itself carried is overridden with it — mirroring how the
+    NixOS module derives the on-wire name from its real attr key.
+    That makes forwarding a whole evaluated table straight into
+    `mkTable` / `mkRuleset` "just work".
 
     Returns the evaluated `nftzones.types.table` value with all
     submodule defaults filled in. Internal helper for the public
     `mkTable` / `mkRuleset` — NixOS-module consumers who already
     have an evaluated value should reach `internal.compile.mkTable`
     directly to skip this redundant re-eval (the value is already
-    validated, and re-binding the key-derived `name` under a fresh
-    option key would trip the `name == key` guard on
-    `types.table.name`).
+    validated, and the module applies the same key-derived `name`
+    override at its own boundary).
   */
   evalTableBody =
     name: body:
@@ -62,7 +66,10 @@ let
         { options.${name} = lib.mkOption { type = types.table; }; }
         { config.${name} = body; }
       ];
-    }).config.${name};
+    }).config.${name}
+    // {
+      name = name;
+    };
 
   mkTable = name: body: internal.compile.mkTable (evalTableBody name body);
   mkRuleset = name: body: internal.compile.mkRuleset (evalTableBody name body);

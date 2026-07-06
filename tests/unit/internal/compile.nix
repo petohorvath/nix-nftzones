@@ -214,11 +214,11 @@ in
   # ===== Public API — name argument flows through to output =====
 
   testPublicMkTableUsesArgName = {
-    # The user's `name` arg becomes the evalModules option key, so the
-    # table's `default = name` derives the emitted nftables table name
-    # from it. The `apply` guard on `types.table.name` then holds
-    # `name == key`, so a body that sets a *different* `name` is
-    # rejected rather than silently diverging.
+    # The user's `name` arg is the authoritative on-wire table name:
+    # it becomes the evalModules option key (so the table's
+    # `default = name` derives it) and the boundary then overrides any
+    # `name` the body carried with it, so the emitted table name
+    # always equals the arg.
     expr = (nftzones.mkTable "production-fw" { }).name;
     expected = "production-fw";
   };

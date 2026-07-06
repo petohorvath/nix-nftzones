@@ -344,39 +344,35 @@ let
         name = lib.mkOption {
           type = tableName;
           default = name;
-          # Dropping `readOnly` keeps evaluated table values copy-safe
-          # (see the grouped object types under `lib/types/`), but the
-          # table's name is load-bearing: the compile pipeline and
-          # nixpkgs' `networking.nftables.tables.<key>` wrapper both key
-          # the on-wire table off the enclosing attribute key, so `name`
-          # must still equal it. The grouped object types get this
-          # invariant from `internal.normalize.checkNameKeyMismatch`, but
-          # the table has no enclosing key left by the time it reaches
-          # the pipeline (`compile` receives an already-evaluated value),
-          # so it is enforced here via `apply` — the fallback the check's
-          # normalize path can't reach. A matching `name` (the default,
-          # or an explicit value equal to the key) passes through
-          # untouched, so copies still merge.
-          apply =
-            v:
-            if v == name then
-              v
-            else
-              throw (
-                "nftzones: table name '${v}' must equal its attribute "
-                + "key '${name}'. The `name` field defaults to the key, "
-                + "and both the compile pipeline and nixpkgs' nftables "
-                + "wrapper reference the table by its key. Drop the "
-                + "explicit `name` (it defaults to the key) or key the "
-                + "table under '${v}'."
-              );
+          # `name` defaults to the enclosing key but carries no
+          # per-submodule `apply` guard. The on-wire name is a
+          # projection of the real `networking.nftzones.tables` attr
+          # key, established at the compile boundary: the module's
+          # `tables` option `apply` overrides each entry's `name`
+          # with its key, and the library `mkTable` / `evalTableBody`
+          # does the same with its `name` arg. An `apply` here
+          # couldn't stand in — it sees the *lexical* submodule key,
+          # which for a standalone / facade table
+          # (`options.myfw = mkOption { type = table; }`) is the
+          # option path, not the tables key it compiles under — so it
+          # would spuriously reject a table re-exposed as its own
+          # option and forwarded into `tables.<key>`. Leaving `name`
+          # a plain, readable field keeps the table copy-safe and
+          # facade-safe, matching the grouped object types (whose
+          # `name == key` is likewise a boundary concern, checked by
+          # `internal.normalize.checkNameKeyMismatch`). Phase 4 emit
+          # (`assembleOutput`) reads `.name` for the on-wire table
+          # name, and external introspection (nix-topology,
+          # `deepSeq`) reads it too; the boundary keeps it equal to
+          # the key.
           example = "zonefw";
           description = ''
-            The nftables table name. Derived from the enclosing
-            attribute name — `tables.my-table.name == "my-table"`
-            when used inside `attrsOf`, or the option path when
-            used as a single-instance option. To pick a different
-            name, choose a different attribute key.
+            The nftables table name. A projection of the enclosing
+            `networking.nftzones.tables` attribute key, materialized
+            at the module boundary — `tables.my-table` compiles as
+            table `my-table` regardless of any `name` a forwarded
+            value carried. To pick a different name, choose a
+            different attribute key.
           '';
         };
 

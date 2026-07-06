@@ -305,6 +305,63 @@ in
     };
   };
 
+  # ===== module — a facade `table` option forwards cleanly into tables.<key> =====
+  # Reproduction from the `name`-projection fix: a standalone option
+  # of type `nftzones.types.table` (whose `name` defaults to the
+  # option path `myfw`) forwarded into `networking.nftzones.tables.fw`
+  # under a *different* key. Pre-fix this threw — the table's `name`
+  # `apply` compared the facade option path against the tables key
+  # ('myfw' != 'fw'). Post-fix the module projects the on-wire name
+  # from the real attr key, so the whole evaluated table compiles
+  # under `fw` without copying it field-by-field.
+
+  testModuleFacadeForward = {
+    expr =
+      let
+        cfg = evalSystem (
+          { config, ... }:
+          {
+            options.myfw = lib.mkOption {
+              type = nftzones.types.table;
+              default = { };
+            };
+            config = {
+              networking.nftables.enable = true;
+              networking.firewall.enable = false;
+              myfw.zones.lan.interfaces = [ "lan0" ];
+              myfw.filters.web = {
+                from = [ "lan" ];
+                to = [ "local" ];
+                rule = [ ];
+              };
+              networking.nftzones = {
+                enable = true;
+                tables.fw = config.myfw;
+              };
+            };
+          }
+        );
+        # Forcing the content surfaces any boundary / Phase-1 throw —
+        # this is exactly what threw on the pre-fix code.
+        content = cfg.networking.nftables.tables.fw.content;
+      in
+      {
+        noFailingAssertions = (failingAssertions cfg) == [ ];
+        compiles = builtins.isString content && content != "";
+        hasLanIifs = lib.hasInfix "set lan_iifs" content;
+        # The `tables` option's `apply` projects the forwarded value's
+        # `name` ('myfw') onto its attr key, so every reader — not just
+        # the compiled ruleset — sees the key.
+        optionNameProjected = cfg.networking.nftzones.tables.fw.name;
+      };
+    expected = {
+      noFailingAssertions = true;
+      compiles = true;
+      hasLanIifs = true;
+      optionNameProjected = "fw";
+    };
+  };
+
   # ===== module — hand-written nftables.tables.<other> coexists =====
 
   testModuleHandWrittenCoexists = {
