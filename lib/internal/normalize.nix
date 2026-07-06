@@ -28,6 +28,7 @@
         ↓ checkParentRefs               ctx.errors   (appends)
         ↓ checkParentCycles             ctx.errors   (appends)
         ↓ checkNameCollisions           ctx.errors   (appends)
+        ↓ checkNameKeyMismatch          ctx.errors   (appends)
         ↓ checkSettings                 ctx.errors   (appends)
         ↓ checkZoneRefs                 ctx.errors   (appends)
         ↓ checkZoneMatchable            ctx.errors   (appends)
@@ -179,6 +180,33 @@
   Detects names declared as both a zone and a node — node-to-zone
   lowering would silently overwrite the zone otherwise. Each error
   is `lib.nameValuePair "zoneNameCollision" <message>`.
+
+  ===== checkNameKeyMismatch =====
+
+  Reads:  table.{zones,nodes,filters,policies,snats,dnats,sroutes,
+          droutes} (per `keyedNameGroups`)
+  Writes: ctx.errors (appends)
+
+  Guards the `name == <attribute key>` invariant for every object
+  that lives in a keyed attrset. The `name` sub-option on these
+  types dropped `readOnly` so evaluated submodules stay copy-safe
+  (copying one into another `attrsOf <type>` option no longer
+  re-defines a read-only field — see the type modules under
+  `lib/types/`). `name` still defaults to the enclosing key, but a
+  user can now set it explicitly, which would desync it from the
+  key the pipeline keys everything off: dispatch sort and reference
+  resolution, generated set names, and the paths in these very
+  error messages all derive from the attr key, while external
+  introspection (nix-topology, `deepSeq`) reads `.name`. Flagging
+  the divergence makes the misuse fail loudly here instead of
+  silently splitting the two.
+
+  The table type is not covered — it has no enclosing key by the
+  time the pipeline sees it (`compile` receives an already-
+  evaluated value); its invariant is enforced by an `apply` on
+  `types.table`'s `name` option instead.
+
+  Each error is `lib.nameValuePair "nameKeyMismatch" <message>`.
 
   ===== collectAllZoneNames =====
 
@@ -915,6 +943,54 @@ let
         n:
         lib.nameValuePair "zoneNameCollision" "name collision: '${n}' is declared as both a zone and a node"
       ) collisions;
+    in
+    {
+      inherit table;
+      ctx = ctx // {
+        errors = ctx.errors ++ newErrors;
+      };
+    };
+
+  # Object groups keyed by attribute name, each entry carrying a
+  # key-derived `name`: the two zone-namespace groups (`zones` /
+  # `nodes`) plus every rule group. Reusing `groupNames` (derived
+  # from `groupDirections`) rather than re-listing the rule groups
+  # keeps this in step with that single source of truth — a new rule
+  # group is name-checked automatically. The table type is absent by
+  # design: it has no enclosing key by the time the pipeline sees it
+  # (see `checkNameKeyMismatch`).
+  keyedNameGroups = [
+    "zones"
+    "nodes"
+  ]
+  ++ groupNames;
+
+  checkNameKeyMismatch =
+    { table, ctx }:
+    let
+      checkGroup =
+        group:
+        lib.concatLists (
+          lib.mapAttrsToList (
+            key: obj:
+            # `obj.name or key` mirrors the defensive reads elsewhere
+            # in this file (`parentOf`): raw fixtures that bypass the
+            # type system may omit `name`, and an absent name can't
+            # diverge from its key. `obj.name` in the message is only
+            # forced when the guard already proved it present and
+            # divergent, so this never trips the missing-attr path.
+            lib.optional ((obj.name or key) != key) (
+              lib.nameValuePair "nameKeyMismatch" (
+                "${group}.${key}.name is '${obj.name}' but must equal its "
+                + "attribute key '${key}' — the compile pipeline references "
+                + "this object by '${key}'. Drop the explicit `name` (it "
+                + "defaults to the key) or rename the attribute to '${obj.name}'."
+              )
+            )
+          ) (table.${group} or { })
+        );
+
+      newErrors = lib.concatMap checkGroup keyedNameGroups;
     in
     {
       inherit table;
@@ -2016,6 +2092,7 @@ let
         checkParentRefs
         checkParentCycles
         checkNameCollisions
+        checkNameKeyMismatch
         checkSettings
         checkZoneRefs
         checkZoneMatchable
@@ -2056,6 +2133,7 @@ in
     computeChildrenOf
     computeRootZoneNames
     checkNameCollisions
+    checkNameKeyMismatch
     checkPolicyUniqueness
     checkSettings
     collectAllZoneNames

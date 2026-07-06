@@ -105,7 +105,6 @@ let
       options = {
         name = lib.mkOption {
           type = policyName;
-          readOnly = true;
           default = name;
           example = "lan-to-wan";
           description = ''

@@ -70,7 +70,6 @@ let
       options = {
         name = lib.mkOption {
           type = srouteName;
-          readOnly = true;
           default = name;
           example = "guest-via-vpn";
           description = ''

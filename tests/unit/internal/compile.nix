@@ -214,10 +214,11 @@ in
   # ===== Public API — name argument flows through to output =====
 
   testPublicMkTableUsesArgName = {
-    # The user's `name` arg becomes the actual nftables table name
-    # in the emitted output. Without the separate name parameter
-    # this would fail (the submodule's `default = name` for the
-    # readOnly field would conflict with any body-set value).
+    # The user's `name` arg becomes the evalModules option key, so the
+    # table's `default = name` derives the emitted nftables table name
+    # from it. The `apply` guard on `types.table.name` then holds
+    # `name == key`, so a body that sets a *different* `name` is
+    # rejected rather than silently diverging.
     expr = (nftzones.mkTable "production-fw" { }).name;
     expected = "production-fw";
   };

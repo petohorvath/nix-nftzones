@@ -21,9 +21,9 @@ in
   # ===== top-level metadata defaults =====
 
   testTableNameDerivedFromOptionKey = {
-    # The `fw` option in evalTable's harness drives the read-only
-    # `name` field; tests using a different option key would see
-    # that key here.
+    # The `fw` option in evalTable's harness drives the key-derived
+    # `name` field (`default = name`); tests using a different option
+    # key would see that key here.
     expr = empty.name;
     expected = "fw";
   };

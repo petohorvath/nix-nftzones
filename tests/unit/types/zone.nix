@@ -52,20 +52,24 @@ in
     expected = true;
   };
 
-  # ===== zone.name — derives from attrset key, read-only =====
+  # ===== zone.name — derives from attrset key =====
 
   testZoneNameDerivedFromKey = {
     expr = (zoneIn { }).name;
     expected = "lan";
   };
 
-  testZoneNameReadOnlyRejectsOverride = {
+  # `name` is no longer `readOnly`, so the type accepts an explicit
+  # value (this is what keeps evaluated zones copy-safe). The
+  # `name == key` invariant is enforced at compile time by
+  # `internal.normalize.checkNameKeyMismatch`, exercised in
+  # `tests/unit/types/name-key.nix`.
+  testZoneNameAcceptsExplicitKey = {
     expr =
-      evalFails
-        (evalTable {
-          zones.lan.name = "other";
-        }).zones.lan.name;
-    expected = true;
+      (evalTable {
+        zones.lan.name = "lan";
+      }).zones.lan.name;
+    expected = "lan";
   };
 
   # ===== defaults — every zone field has a sensible empty default =====

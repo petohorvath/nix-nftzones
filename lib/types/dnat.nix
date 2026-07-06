@@ -149,7 +149,6 @@ let
       options = {
         name = lib.mkOption {
           type = dnatName;
-          readOnly = true;
           default = name;
           example = "web-fwd";
           description = ''

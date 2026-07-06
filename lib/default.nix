@@ -42,16 +42,18 @@ let
   /*
     Validate a raw user `body` (an attrset) against `types.table`
     by running it through `lib.evalModules`, using `name` as the
-    option attribute key so the table's read-only `name` field
-    derives from the user's chosen value (the submodule's
-    `default = name` mechanism).
+    option attribute key so the table's `name` field derives from
+    the user's chosen value (the submodule's `default = name`
+    mechanism).
 
     Returns the evaluated `nftzones.types.table` value with all
     submodule defaults filled in. Internal helper for the public
     `mkTable` / `mkRuleset` — NixOS-module consumers who already
     have an evaluated value should reach `internal.compile.mkTable`
-    directly to skip this extra eval (which would conflict with
-    the read-only `name` field).
+    directly to skip this redundant re-eval (the value is already
+    validated, and re-binding the key-derived `name` under a fresh
+    option key would trip the `name == key` guard on
+    `types.table.name`).
   */
   evalTableBody =
     name: body:

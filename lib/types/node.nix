@@ -123,7 +123,6 @@ let
       options = {
         name = lib.mkOption {
           type = nodeName;
-          readOnly = true;
           default = name;
           example = "web-server";
           description = ''

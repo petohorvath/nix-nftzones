@@ -31,7 +31,7 @@ in
     expected = true;
   };
 
-  # ===== node.name — derives from attrset key, read-only =====
+  # ===== node.name — derives from attrset key =====
 
   testNodeNameDerivedFromKey = {
     expr =

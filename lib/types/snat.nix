@@ -103,7 +103,6 @@ let
       options = {
         name = lib.mkOption {
           type = snatName;
-          readOnly = true;
           default = name;
           example = "lan-masquerade";
           description = ''

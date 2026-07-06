@@ -96,7 +96,6 @@ let
       options = {
         name = lib.mkOption {
           type = filterName;
-          readOnly = true;
           default = name;
           example = "allow-ssh";
           description = ''

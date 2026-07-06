@@ -182,7 +182,6 @@ let
       options = {
         name = lib.mkOption {
           type = zoneName;
-          readOnly = true;
           default = name;
           example = "trusted";
           description = ''

@@ -72,7 +72,6 @@ let
       options = {
         name = lib.mkOption {
           type = drouteName;
-          readOnly = true;
           default = name;
           example = "lan-via-vpn";
           description = ''
