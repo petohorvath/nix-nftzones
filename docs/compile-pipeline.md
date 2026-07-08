@@ -193,7 +193,7 @@ For each zone, generate up to three sets:
 - `<name>_v4` — `type ipv4_addr; flags interval` of v4 CIDRs (coalesced by `libnet.cidr.summarize`).
 - `<name>_v6` — `type ipv6_addr; flags interval` of v6 CIDRs (coalesced by `libnet.cidr.summarize`).
 
-Each set carries the union of the zone's own interfaces/CIDRs **plus every descendant's, transitively**. A child zone is a refinement of its parent, so anything that matches the child must also match the parent's base-chain dispatch jump (the child is reached from there via the parent's child-dispatch sub-rule). CIDR sets are coalesced at compile time: exact duplicates collapse, subset overlaps drop (descendant `10.0.0.5/32` inside parent `10.0.0.0/24` → just `10.0.0.0/24`), and adjacent sibling prefixes fuse (`10.0.0.0/24` + `10.0.1.0/24` → `10.0.0.0/23`). The rendered set matches the live kernel state without relying on the kernel-side `auto-merge` flag. Empty sets are skipped. Per-direction match expressions used by jumps are constructed by `internal.emit.mkDirectionVariants` from these set names.
+Each set carries the union of the zone's own interfaces/CIDRs **plus every descendant's, transitively**. A child zone is a refinement of its parent, so anything that matches the child must also match the parent's base-chain dispatch jump (the child is reached from there via the parent's child-dispatch sub-rule). Within one family the union only ever widens the parent's match (OR inside the set); a set whose content comes **only** from descendants must not be ANDed into the parent's own gate, which is why jump construction classifies each section by own-ness (§4.4) — adding a descendant never shrinks what an ancestor matches. CIDR sets are coalesced at compile time: exact duplicates collapse, subset overlaps drop (descendant `10.0.0.5/32` inside parent `10.0.0.0/24` → just `10.0.0.0/24`), and adjacent sibling prefixes fuse (`10.0.0.0/24` + `10.0.1.0/24` → `10.0.0.0/23`). The rendered set matches the live kernel state without relying on the kernel-side `auto-merge` flag. Empty sets are skipped. Per-direction match expressions used by jumps are constructed by `internal.emit.mkDirectionVariants` from these set names.
 
 ### 4.2 Base chains
 
@@ -274,33 +274,39 @@ A section "contributes" when it's non-null AND non-empty. Empty list (`[ ]`) and
 
 The `interfaces` section is **hook-gated**: dropped when the relevant `iifname` / `oifname` field isn't valid at the hook (defense; `checkChainOverridePlacement` should have caught it). The other sections are hook-agnostic.
 
+**Own-ness.** The auto-path sets are transitive unions (§4.1), so each section is additionally classified as **own** (anchored by the zone's raw `interfaces` / `cidrs` per `internal.zone.ownSectionsOf`, or by an active override — overrides are own by definition) vs **inherited** (present in the union set only through descendants). Only own sections AND together. An inherited section ANDed into the gate would narrow the ancestor's dispatch to just the descendant's traffic — e.g. an address-only node under an interface-only zone would turn the zone's `iifname @<zone>_iifs` gate into `iifname @<zone>_iifs ip saddr @<zone>_v4`, cutting off every other host in the zone. Inherited sections widen the gate instead: inherited v4/v6 each become one extra OR variant behind the own prefix (unless the own gate is interface/extra-only, which is family-agnostic and already covers the subtree), and inherited interfaces become one standalone family-agnostic variant. Pinned by the `parent-mixed-sections` / `parent-mixed-sections-mirror` integration scenarios.
+
 > Note — *section* here is unrelated to the *bucket slot* concept defined in the Terminology section above. Bucket slots (`preDispatch` / `subChains` / `postDispatch`) are Phase 3 cell placements within a chain bucket; override sections are per-direction match-clause containers within `matchOverride`. Different concepts, same generic vocabulary; they never appear together in code.
 
 **Variant construction.**
 
 ```
-prefix   = ifsAtHook ++ extraSection
-variants = optional (v4Section ≠ [ ]) (prefix ++ v4Section)
-        ++ optional (v6Section ≠ [ ]) (prefix ++ v6Section)
-result   = if variants ≠ [ ] then variants
-           else if prefix ≠ [ ] then [ prefix ]
-           else [ ]
+prefix    = (ifsAtHook if interfaces own) ++ extraSection
+ownFams   = optional (v4 own  && v4Section ≠ [ ]) (prefix ++ v4Section)
+         ++ optional (v6 own  && v6Section ≠ [ ]) (prefix ++ v6Section)
+inhFams   = optional (v4 inherited && v4Section ≠ [ ]) (prefix ++ v4Section)
+         ++ optional (v6 inherited && v6Section ≠ [ ]) (prefix ++ v6Section)
+inhIfs    = optional (interfaces inherited && ifsAtHook ≠ [ ]) ifsAtHook
+result    = if ownFams ≠ [ ] then ownFams ++ inhFams ++ inhIfs
+            else if prefix ≠ [ ] then [ prefix ]
+            else inhFams ++ inhIfs
 ```
 
-The reachable cases (auto-path only — section-resolution
-simplified to "no override anywhere"; the empty-zone case below
-is unreachable in practice because `checkZoneMatchable` rejects
-it in Phase 1):
+The reachable cases (auto-path only — section-resolution simplified to "no override anywhere"; "inh" = inherited, i.e. present in the union set only through descendants; the empty-zone case below is unreachable in practice because `checkZoneMatchable` rejects it in Phase 1):
 
 | Zone has        | Variants emitted (per direction) |
 |---|---|
-| iface only      | `[[ <ifField> @<zone>_iifs ]]` |
-| v4 only         | `[[ <ipFamily> <addrField> @<zone>_v4 ]]` |
-| v6 only         | `[[ ip6 <addrField> @<zone>_v6 ]]` |
-| v4 + v6         | 2 variants — one v4, one v6 |
-| iface + v4      | 1 variant — iface prefix + v4 |
-| iface + v6      | 1 variant — iface prefix + v6 |
-| iface + v4 + v6 | 2 variants — each with iface prefix |
+| own iface only  | `[[ <ifField> @<zone>_iifs ]]` |
+| own iface + inh v4/v6 | 1 variant — iface only (family-agnostic; the subtree rides the own gate) |
+| own v4 only     | `[[ <ipFamily> <addrField> @<zone>_v4 ]]` |
+| own v6 only     | `[[ ip6 <addrField> @<zone>_v6 ]]` |
+| own v4 + own v6 | 2 variants — one v4, one v6 |
+| own iface + own v4 | 1 variant — iface prefix + v4 |
+| own iface + own v6 | 1 variant — iface prefix + v6 |
+| own iface + own v4 + own v6 | 2 variants — each with iface prefix |
+| own v4 + inh v6 | 2 variants — v4, v6 (no cross-AND) |
+| own v4 + inh iface | 2 variants — v4; standalone iface (family-agnostic) |
+| all inherited (grouping zone) | 1 standalone variant per present section |
 | empty *(unreachable)* | `[ ]` — defense only; `checkZoneMatchable` rejects empty zones at Phase 1 |
 
 Where `<ifField>` is `iifname` (from-direction) or `oifname` (to-direction), and `<addrField>` is `saddr` / `daddr` likewise. With overrides in play, every cell can be replaced by user content; `extra` adds an extra family-agnostic prefix to every variant (e.g. `meta mark @<zone>_marks` for fwmark-defined zone membership).
@@ -330,10 +336,13 @@ When the hook makes the only available field unavailable AND the zone has no add
 Helper signatures:
 
 ```nix
-mkDirectionVariants = { hook, direction, zoneName, active, zoneSets, localZone }:
+mkDirectionVariants = { hook, direction, zoneName, active, mergedZones,
+                        zoneSets, localZone }:
   <list-of-variants>;  # each variant is a list of statements; `active`
                        # is the set of contributing matchOverride sections
-                       # from `internal.zone.getActiveMatchOverrides`
+                       # from `internal.zone.getActiveMatchOverrides`;
+                       # `mergedZones` feeds the own/inherited section
+                       # classification via `internal.zone.ownSectionsOf`
 
 mkRootJumpRules = { hook, baseChainName, effectiveSubChains, mergedZones,
                     zoneSets, localZone }:

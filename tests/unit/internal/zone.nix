@@ -12,7 +12,7 @@
 }:
 let
   inherit (nftypes.dsl) expr;
-  inherit (nftzones.internal.zone) genSets getActiveMatchOverrides;
+  inherit (nftzones.internal.zone) genSets getActiveMatchOverrides ownSectionsOf;
 
   /*
     Convenience for the single-zone (no descendants) case.
@@ -568,6 +568,61 @@ in
       egr = {
         extra = [ "egr-extra" ];
       };
+    };
+  };
+
+  # ===== ownSectionsOf — raw fields drive the classification =====
+
+  testOwnSectionsOfDualStack = {
+    expr = ownSectionsOf {
+      interfaces = [ "lan0" ];
+      cidrs = [
+        cidrV4
+        cidrV6
+      ];
+    };
+    expected = {
+      interfaces = true;
+      v4 = true;
+      v6 = true;
+    };
+  };
+
+  testOwnSectionsOfIfsOnly = {
+    expr = ownSectionsOf {
+      interfaces = [ "lan0" ];
+      cidrs = [ ];
+    };
+    expected = {
+      interfaces = true;
+      v4 = false;
+      v6 = false;
+    };
+  };
+
+  testOwnSectionsOfV6Only = {
+    expr = ownSectionsOf {
+      interfaces = [ ];
+      cidrs = [ cidrV6 ];
+    };
+    expected = {
+      interfaces = false;
+      v4 = false;
+      v6 = true;
+    };
+  };
+
+  # ===== ownSectionsOf — missing raw fields classify as contributing nothing =====
+
+  testOwnSectionsOfMissingFields = {
+    # Raw fixtures that bypass the type system may omit the
+    # fields entirely; `or [ ]` reads make that equivalent to
+    # explicit emptiness.
+    expr = ownSectionsOf { };
+    expected = {
+      interfaces = false;
+      v4 = false;
+      v6 = false;
     };
   };
 }

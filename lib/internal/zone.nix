@@ -12,16 +12,30 @@
                   hierarchy semantics: a child zone is a
                   *refinement* of its parent — anything that
                   matches the child also matches the parent.
-                  The base-chain dispatch jump for the parent
-                  therefore catches descendant traffic too, and
-                  the child-dispatch jump inside the parent's
-                  sub-chain routes it into the more specific
-                  child sub-chain (cf. Phase 4's
-                  `mkChildDispatchJumpRules`). Single source of
-                  truth for naming and content — folded once by
-                  Phase 1's `computeZoneSets` into `ctx.zoneSets`,
-                  then consumed by Phase 1 validators (names
-                  only) and Phase 4 emit (full bodies).
+                  Within one family the union only ever *widens*
+                  the parent's match (OR inside the set), so the
+                  parent's base-chain dispatch jump catches
+                  descendant traffic too, and the child-dispatch
+                  jump inside the parent's sub-chain routes it
+                  into the more specific child sub-chain (cf.
+                  Phase 4's `mkChildDispatchJumpRules`). Across
+                  families the union set must never AND into the
+                  parent's own dispatch gate — Phase 4's
+                  `mkDirectionVariants` consults `ownSectionsOf`
+                  so a section populated only by descendants
+                  widens the gate as its own OR variant instead
+                  of narrowing the parent's match to descendant
+                  traffic. Single source of truth for naming and
+                  content — folded once by Phase 1's
+                  `computeZoneSets` into `ctx.zoneSets`, then
+                  consumed by Phase 1 validators (names only)
+                  and Phase 4 emit (full bodies).
+    - `ownSectionsOf` — classifies which match sections a zone
+                  anchors *itself* (interfaces / v4 / v6 from its
+                  raw fields, descendants excluded). Drives Phase
+                  4's dispatch-gate composition: own sections AND
+                  together, descendant-only sections join as OR
+                  variants.
     - `getActiveMatchOverrides` — returns the active sections of
                   a zone's matchOverride for a given side, with
                   null and empty-list sections filtered out. The
@@ -81,6 +95,33 @@
     => {
       lan_iifs = { type = "ifname"; elements = [ "lan0" "guest0" ]; };
     }
+
+  ===== ownSectionsOf =====
+
+  Inputs:
+    zone — one merged-zone value (declared zone or lowered node).
+           Raw `interfaces` / `cidrs` are read with `or [ ]`
+           defaults (mirroring `parentOf` in
+           `internal/normalize.nix`) so raw fixtures that bypass
+           the type system classify as contributing nothing.
+
+  Output:
+    `{ interfaces; v4; v6; }` booleans — true iff the zone's own
+    raw fields populate that section. `matchOverride` sections
+    are deliberately not consulted: an active override is own by
+    definition and `mkDirectionVariants` already holds the active
+    set; this helper only answers whether the *auto* (set-backed)
+    path is anchored by the zone itself or inherited from
+    descendants via the transitive union in `genSets`.
+
+  Why this exists: `genSets` unions descendants into the per-zone
+  sets, so set presence alone cannot distinguish "the zone itself
+  matches this section" from "only a descendant does". Phase 4's
+  gate composition needs that distinction — a descendant-only
+  section ANDed into the ancestor's gate would narrow the
+  ancestor to just the descendant's traffic (the cross-family
+  narrowing bug pinned by
+  `tests/integration/scenarios/parent-mixed-sections.nix`).
 */
 { inputs }:
 let
@@ -181,7 +222,24 @@ let
   getActiveMatchOverrides =
     zone: side:
     lib.filterAttrs (_: section: section != null && section != [ ]) zone.matchOverride.${side};
+
+  /*
+    Classify which sections `zone` anchors with its own raw
+    fields, ignoring descendants. Family split mirrors `genSets`
+    (libnet parse + isIpv4/isIpv6) so the two never disagree on
+    what counts as a v4/v6 contribution.
+  */
+  ownSectionsOf =
+    zone:
+    let
+      parsed = map libnet.cidr.parse (zone.cidrs or [ ]);
+    in
+    {
+      interfaces = (zone.interfaces or [ ]) != [ ];
+      v4 = builtins.any libnet.cidr.isIpv4 parsed;
+      v6 = builtins.any libnet.cidr.isIpv6 parsed;
+    };
 in
 {
-  inherit genSets getActiveMatchOverrides;
+  inherit genSets getActiveMatchOverrides ownSectionsOf;
 }

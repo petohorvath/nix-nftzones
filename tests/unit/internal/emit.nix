@@ -1304,6 +1304,7 @@ in
       direction = "to";
       zoneName = "local";
       active = { };
+      mergedZones = { };
       zoneSets = { };
       localZone = "local";
     };
@@ -1316,6 +1317,7 @@ in
       direction = "to";
       zoneName = null;
       active = { };
+      mergedZones = { };
       zoneSets = { };
       localZone = "local";
     };
@@ -1328,6 +1330,9 @@ in
       direction = "from";
       zoneName = "lan";
       active = { };
+      mergedZones.lan = {
+        interfaces = [ "lan0" ];
+      };
       zoneSets = {
         lan_iifs = {
           type = "ifname";
@@ -1347,6 +1352,9 @@ in
       direction = "from";
       zoneName = "wan";
       active = { };
+      mergedZones.wan = {
+        interfaces = [ "wan0" ];
+      };
       zoneSets = {
         wan_iifs = {
           type = "ifname";
@@ -1364,6 +1372,9 @@ in
       direction = "from";
       zoneName = "lan";
       active = { };
+      mergedZones.lan = {
+        cidrs = [ "10.0.0.0/24" ];
+      };
       zoneSets = {
         lan_v4 = {
           type = "ipv4_addr";
@@ -1384,6 +1395,12 @@ in
       direction = "from";
       zoneName = "lan";
       active = { };
+      mergedZones.lan = {
+        cidrs = [
+          "10.0.0.0/24"
+          "fd00::/64"
+        ];
+      };
       zoneSets = {
         lan_v4 = {
           type = "ipv4_addr";
@@ -1410,6 +1427,13 @@ in
       direction = "from";
       zoneName = "lan";
       active = { };
+      mergedZones.lan = {
+        interfaces = [ "lan0" ];
+        cidrs = [
+          "10.0.0.0/24"
+          "fd00::/64"
+        ];
+      };
       zoneSets = {
         lan_iifs = {
           type = "ifname";
@@ -1437,6 +1461,148 @@ in
         (nftypes.dsl.inSet nftypes.dsl.fields.meta.iifname (nftypes.dsl.expr.setRef "lan_iifs"))
         (nftypes.dsl.inSet nftypes.dsl.fields.ip6.saddr (nftypes.dsl.expr.setRef "lan_v6"))
       ]
+    ];
+  };
+
+  /*
+    Own/inherited gate composition — the sets carry descendant
+    content (transitive union), but only sections anchored by the
+    zone's own raw fields may AND together. Pins the fix for the
+    cross-family narrowing bug (see
+    `tests/integration/scenarios/parent-mixed-sections.nix`).
+  */
+
+  # Interface-only zone with a descendant-contributed v4 set
+  # (address-only node under it): the gate stays the
+  # family-agnostic interface match — no `ip saddr` AND clause.
+  testMkDirectionVariantsInheritedFamilySuppressed = {
+    expr = mkDirectionVariants {
+      hook = "forward";
+      direction = "from";
+      zoneName = "lan";
+      active = { };
+      mergedZones.lan = {
+        interfaces = [ "lan0" ];
+      };
+      zoneSets = {
+        lan_iifs = {
+          type = "ifname";
+          elements = [ "lan0" ];
+        };
+        lan_v4 = {
+          type = "ipv4_addr";
+          flags = [ "interval" ];
+          elements = [ ];
+        };
+      };
+      localZone = "local";
+    };
+    expected = [
+      [ (nftypes.dsl.inSet nftypes.dsl.fields.meta.iifname (nftypes.dsl.expr.setRef "lan_iifs")) ]
+    ];
+  };
+
+  # Mirror shape: cidrs-only zone with a descendant-contributed
+  # interface set. The own v4 variant stays un-narrowed and the
+  # inherited interfaces ride a standalone family-agnostic
+  # variant so the descendant's traffic still enters.
+  testMkDirectionVariantsInheritedIfsStandalone = {
+    expr = mkDirectionVariants {
+      hook = "forward";
+      direction = "from";
+      zoneName = "lan";
+      active = { };
+      mergedZones.lan = {
+        cidrs = [ "10.0.0.0/24" ];
+      };
+      zoneSets = {
+        lan_iifs = {
+          type = "ifname";
+          elements = [ "guest0" ];
+        };
+        lan_v4 = {
+          type = "ipv4_addr";
+          flags = [ "interval" ];
+          elements = [ ];
+        };
+      };
+      localZone = "local";
+    };
+    expected = [
+      [ (nftypes.dsl.inSet nftypes.dsl.fields.ip.saddr (nftypes.dsl.expr.setRef "lan_v4")) ]
+      [ (nftypes.dsl.inSet nftypes.dsl.fields.meta.iifname (nftypes.dsl.expr.setRef "lan_iifs")) ]
+    ];
+  };
+
+  # Family-anchored zone (iface + v4) with a descendant-only v6
+  # set: the own anchors are family-blind, so the inherited v6
+  # widens the gate with its own variant behind the own prefix.
+  testMkDirectionVariantsInheritedFamilyWidens = {
+    expr = mkDirectionVariants {
+      hook = "forward";
+      direction = "from";
+      zoneName = "lan";
+      active = { };
+      mergedZones.lan = {
+        interfaces = [ "lan0" ];
+        cidrs = [ "10.0.0.0/24" ];
+      };
+      zoneSets = {
+        lan_iifs = {
+          type = "ifname";
+          elements = [ "lan0" ];
+        };
+        lan_v4 = {
+          type = "ipv4_addr";
+          flags = [ "interval" ];
+          elements = [ ];
+        };
+        lan_v6 = {
+          type = "ipv6_addr";
+          flags = [ "interval" ];
+          elements = [ ];
+        };
+      };
+      localZone = "local";
+    };
+    expected = [
+      [
+        (nftypes.dsl.inSet nftypes.dsl.fields.meta.iifname (nftypes.dsl.expr.setRef "lan_iifs"))
+        (nftypes.dsl.inSet nftypes.dsl.fields.ip.saddr (nftypes.dsl.expr.setRef "lan_v4"))
+      ]
+      [
+        (nftypes.dsl.inSet nftypes.dsl.fields.meta.iifname (nftypes.dsl.expr.setRef "lan_iifs"))
+        (nftypes.dsl.inSet nftypes.dsl.fields.ip6.saddr (nftypes.dsl.expr.setRef "lan_v6"))
+      ]
+    ];
+  };
+
+  # Grouping zone (no own match at all): every section is
+  # descendant-contributed and stands alone — ANDing sections
+  # from different descendants would match their intersection.
+  testMkDirectionVariantsGroupingZone = {
+    expr = mkDirectionVariants {
+      hook = "forward";
+      direction = "from";
+      zoneName = "internal";
+      active = { };
+      mergedZones.internal = { };
+      zoneSets = {
+        internal_iifs = {
+          type = "ifname";
+          elements = [ "guest0" ];
+        };
+        internal_v4 = {
+          type = "ipv4_addr";
+          flags = [ "interval" ];
+          elements = [ ];
+        };
+      };
+      localZone = "local";
+    };
+    expected = [
+      [ (nftypes.dsl.inSet nftypes.dsl.fields.ip.saddr (nftypes.dsl.expr.setRef "internal_v4")) ]
+      [ (nftypes.dsl.inSet nftypes.dsl.fields.meta.iifname (nftypes.dsl.expr.setRef "internal_iifs")) ]
     ];
   };
 
@@ -1992,6 +2158,12 @@ in
       active = {
         extra = [ (nftypes.dsl.eq nftypes.dsl.fields.meta.mark 256) ];
       };
+      mergedZones.vpn-users = {
+        cidrs = [
+          "10.8.0.0/24"
+          "fd42::/64"
+        ];
+      };
       zoneSets = {
         vpn-users_v4 = { };
         vpn-users_v6 = { };
@@ -2018,6 +2190,7 @@ in
       active = {
         extra = [ (nftypes.dsl.eq nftypes.dsl.fields.meta.mark 256) ];
       };
+      mergedZones.marked = { };
       zoneSets = { };
       localZone = "local";
     };
@@ -2033,6 +2206,9 @@ in
       zoneName = "lan";
       active = {
         ipv4 = [ (nftypes.dsl.inSet nftypes.dsl.fields.ip.saddr (nftypes.dsl.expr.setRef "user-v4")) ];
+      };
+      mergedZones.lan = {
+        cidrs = [ "fd00::/64" ];
       };
       zoneSets = {
         lan_v4 = { };
@@ -2055,6 +2231,9 @@ in
         interfaces = [
           (nftypes.dsl.inSet nftypes.dsl.fields.meta.iifname (nftypes.dsl.expr.setRef "user-iifs"))
         ];
+      };
+      mergedZones.lan = {
+        cidrs = [ "10.0.0.0/24" ];
       };
       zoneSets = {
         lan_v4 = { };

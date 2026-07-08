@@ -148,19 +148,38 @@
   So one variant per address family with a non-empty set, plus
   the optional interface prefix when the hook allows it.
 
-  Variant count per direction (where both interfaces and CIDRs
-  are family-segregated by `internal.zone.genSets`):
+  Sections carry an *own-ness* classification (via
+  `internal.zone.ownSectionsOf`; an active matchOverride section
+  is own by definition): the union sets from
+  `internal.zone.genSets` also hold descendant content, and only
+  sections the zone anchors itself may AND together. A
+  descendant-only ("inherited") section ANDed into the gate would
+  narrow the ancestor's dispatch to just the descendant's
+  traffic. Inherited sections widen instead:
+    - inherited v4 / v6 → one extra OR variant each (behind the
+      own prefix) so descendant traffic of a family the zone
+      lacks still enters — unless the own gate is
+      interface/extra-only, which is family-agnostic and covers
+      the whole subtree already;
+    - inherited interfaces → one standalone family-agnostic
+      variant (never joins the prefix).
 
-    zone has        | variants emitted
-    ----------------|-----------------------
-    empty           | 0
-    iface only      | 1 (family-agnostic)
-    v4 only         | 1
-    v6 only         | 1
-    v4 + v6         | 2
-    iface + v4      | 1 (iface prefix + v4)
-    iface + v6      | 1 (iface prefix + v6)
-    iface + v4 + v6 | 2 (each with iface prefix)
+  Variant count per direction ("own" = anchored by the zone's
+  raw fields or an override; "inh" = present only via
+  descendants in the union set):
+
+    zone has              | variants emitted
+    ----------------------|----------------------------------
+    empty                 | 0
+    own iface only        | 1 (family-agnostic)
+    own iface + inh v4/v6 | 1 (family-agnostic covers subtree)
+    own v4 only           | 1
+    own v4 + own v6       | 2
+    own iface + own v4    | 1 (iface prefix + v4)
+    own iface + own v4/v6 | 2 (each with iface prefix)
+    own v4 + inh v6       | 2 (v4, v6 — no cross-AND)
+    own v4 + inh iface    | 2 (v4; standalone iface)
+    all inherited         | 1 per present section (no ANDing)
 
   Set references (`@<zone>_iifs`, `@<zone>_v4`, `@<zone>_v6`)
   point at the zone-derived sets emitted by Phase 1's
@@ -323,7 +342,7 @@ let
     ip6
     ;
   inherit (nftypes) chainTypeFor priorityNameOf;
-  inherit (internal.zone) getActiveMatchOverrides;
+  inherit (internal.zone) getActiveMatchOverrides ownSectionsOf;
   inherit (internal.placement) baseChainNameOf walkParents hooksWithIifname;
 
   # Boilerplate rule constants (each rule = list of statements).
@@ -552,7 +571,12 @@ let
         else
           let
             fromVariants = mkDirectionVariants {
-              inherit hook zoneSets localZone;
+              inherit
+                hook
+                mergedZones
+                zoneSets
+                localZone
+                ;
               direction = "from";
               zoneName = childName;
               active = activeFor childName;
@@ -677,12 +701,35 @@ let
         vlan, cgroup, …); no auto path. Joined into the prefix
         when present.
 
+    Own-ness: the union sets behind the auto path also carry
+    descendant content (`internal.zone.genSets`), so each section
+    is classified own (anchored by the zone's raw fields —
+    `internal.zone.ownSectionsOf` — or by an active override) vs
+    inherited (descendant-contributed only). Only own sections
+    AND together; an inherited section ANDed into the gate would
+    narrow the ancestor's dispatch to just the descendant's
+    traffic — adding a descendant must never shrink what an
+    ancestor matches.
+
     Variant construction:
-      - prefix       = ifsAtHook ++ extraSection
-      - one variant per non-empty family-specific section:
+      - prefix           = own ifsAtHook ++ extraSection
+      - one variant per non-empty own family section:
           [ prefix ++ v4Section ], [ prefix ++ v6Section ]
-      - if no family sections contribute but prefix is non-empty →
-        single prefix-only variant (interface/extra-only zone).
+      - own family variants present → widen with the inherited
+        leftovers: one OR variant per inherited family
+        ([ prefix ++ famSection ], patching the own anchors'
+        family-blindness) plus a standalone [ ifsAtHook ] when
+        interfaces are inherited (family-agnostic, so it must
+        not be constrained by the zone's own sections).
+      - no own family sections but prefix non-empty → single
+        prefix-only variant. Family-agnostic: descendant traffic
+        of every family already enters through it (an
+        address-only child lives behind the parent's own
+        interfaces), so inherited families add no variant.
+      - nothing own (grouping zone) → every present section
+        stands alone as one variant. Different descendants may
+        contribute different sections; ANDing them would match
+        only their intersection.
 
     Special cases:
       - `zoneName == null` (single-direction sub-chain — dnat /
@@ -703,6 +750,7 @@ let
       direction,
       zoneName,
       active,
+      mergedZones,
       zoneSets,
       localZone,
     }:
@@ -738,18 +786,64 @@ let
         # Placement should have flagged this case, so this is defensive.
         ifsAtHook = if ifAvailable then ifsSection else [ ];
 
-        prefix = ifsAtHook ++ extraSection;
+        /*
+          Own-ness per section: an active override is own by
+          definition; the auto path is own iff the zone's raw
+          fields anchor it (`internal.zone.ownSectionsOf`).
+          A zone missing from `mergedZones` (raw fixtures;
+          unreachable through the validated pipeline) classifies
+          everything as own, reproducing the all-AND composition
+          a flat zone gets.
+        */
+        own =
+          if mergedZones ? ${zoneName} then
+            ownSectionsOf mergedZones.${zoneName}
+          else
+            {
+              interfaces = true;
+              v4 = true;
+              v6 = true;
+            };
+        ifsOwn = active ? interfaces || own.interfaces;
+        v4Own = active ? ipv4 || own.v4;
+        v6Own = active ? ipv6 || own.v6;
 
-        variants =
-          lib.optional (v4Section != [ ]) (prefix ++ v4Section)
-          ++ lib.optional (v6Section != [ ]) (prefix ++ v6Section);
+        # Own-anchored prefix, ANDed into every family variant.
+        # `extra` is override-only and therefore always own;
+        # inherited interfaces never join (see inheritedIfsVariant).
+        prefix = (if ifsOwn then ifsAtHook else [ ]) ++ extraSection;
+
+        ownFamilyVariants =
+          lib.optional (v4Own && v4Section != [ ]) (prefix ++ v4Section)
+          ++ lib.optional (v6Own && v6Section != [ ]) (prefix ++ v6Section);
+
+        # Descendant-contributed families widen the gate with one
+        # OR variant each: the own family anchors are family-blind,
+        # so without these a descendant of another family could
+        # never enter the ancestor's sub-chain.
+        inheritedFamilyVariants =
+          lib.optional (!v4Own && v4Section != [ ]) (prefix ++ v4Section)
+          ++ lib.optional (!v6Own && v6Section != [ ]) (prefix ++ v6Section);
+
+        # Descendant-contributed interfaces stand alone as one
+        # family-agnostic variant — ANDing them into the prefix
+        # would narrow the zone's own variants to descendant
+        # traffic.
+        inheritedIfsVariant = lib.optional (!ifsOwn && ifsAtHook != [ ]) ifsAtHook;
       in
-      if variants != [ ] then
-        variants
+      if ownFamilyVariants != [ ] then
+        # Family-anchored own gate, widened by whatever the
+        # descendants contribute on top.
+        ownFamilyVariants ++ inheritedFamilyVariants ++ inheritedIfsVariant
       else if prefix != [ ] then
+        # Interface/extra-only own gate — family-agnostic, so the
+        # whole subtree (including inherited families) already
+        # rides it; nothing to widen.
         [ prefix ]
       else
-        [ ];
+        # Nothing own (grouping zone): every present section is
+        # descendant-contributed and stands alone.
+        inheritedFamilyVariants ++ inheritedIfsVariant;
 
   /*
     Classify a variant (list of match statements) by network-layer
@@ -815,13 +909,23 @@ let
         else
           let
             fromVariants = map tagFamily (mkDirectionVariants {
-              inherit hook zoneSets localZone;
+              inherit
+                hook
+                mergedZones
+                zoneSets
+                localZone
+                ;
               direction = "from";
               zoneName = fromZone;
               active = activeFor fromZone "ingress";
             });
             toVariants = map tagFamily (mkDirectionVariants {
-              inherit hook zoneSets localZone;
+              inherit
+                hook
+                mergedZones
+                zoneSets
+                localZone
+                ;
               direction = "to";
               zoneName = toZone;
               active = activeFor toZone "egress";

@@ -16,6 +16,10 @@
   entirely and fell through to `policy accept`.
 */
 { nftypes, ... }:
+let
+  inherit (nftypes.dsl) inSet jump expr;
+  inherit (nftypes.dsl.fields) meta ip;
+in
 {
   body = {
     settings.chainPolicy = "accept";
@@ -67,6 +71,16 @@
     {
       description = "wildcard deny policy emits a sub-chain for the parent zone (catches descendant traffic via transitive iif set)";
       expr = compiled.table.chains ? "forward-at-filter__lan-to-wan";
+      expected = true;
+    }
+    {
+      description = "same-family gate composition unchanged: parent's own iface + v4 sections still AND in one dispatch variant";
+      expr = builtins.elem [
+        (inSet meta.iifname (expr.setRef "lan_iifs"))
+        (inSet ip.saddr (expr.setRef "lan_v4"))
+        (inSet meta.oifname (expr.setRef "wan_iifs"))
+        (jump "forward-at-filter__lan-to-wan")
+      ] compiled.table.chains."forward-at-filter".rules;
       expected = true;
     }
   ];
