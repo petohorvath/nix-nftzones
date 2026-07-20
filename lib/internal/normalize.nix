@@ -1973,6 +1973,10 @@ let
           cidr = lib.any (zone: (zone.cidrs or [ ]) != [ ]) zones;
         };
 
+      # Forced once per zone; the O(n²) pair walk below then reads
+      # each classification instead of re-walking the ancestor chain.
+      zoneAxes = lib.mapAttrs (name: _: axesOf name) mergedZones;
+
       ifaceOnly = axes: axes.anchored && axes.iface && !axes.cidr;
       cidrOnly = axes: axes.anchored && axes.cidr && !axes.iface;
 
@@ -1990,8 +1994,8 @@ let
           let
             aName = builtins.elemAt zoneNames i;
             bName = builtins.elemAt zoneNames j;
-            a = axesOf aName;
-            b = axesOf bName;
+            a = zoneAxes.${aName};
+            b = zoneAxes.${bName};
           in
           if crossAxisPair a b && !(relatedByHierarchy mergedZones aName bName) then
             [
