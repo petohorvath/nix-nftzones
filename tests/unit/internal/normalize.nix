@@ -4660,6 +4660,78 @@ in
     };
   };
 
+  # ===== checkCrossAxisOverlap — same-parent siblings split across axes =====
+
+  testCheckCrossAxisOverlapSiblingSplitAxesNotFlagged = {
+    # Pins a deliberate narrowing: `printers` (iface-only) and `web`
+    # (cidr-only) sit under the same interface-bound parent, so `web`
+    # classifies as multi-axis via the inherited interface axis and the
+    # sibling pair goes unflagged — even though key-order shadowing can
+    # still occur among the child-dispatch jumps inside `lan`'s
+    # sub-chain. See the checkCrossAxisOverlap header for the finer
+    # deepest-common-ancestor model this trades away.
+    expr =
+      (runEvalPipeline
+        [
+          convertNodesToZones
+          checkCrossAxisOverlap
+        ]
+        {
+          zones = {
+            lan = {
+              interfaces = [ "lan0" ];
+              cidrs = [ ];
+            };
+            printers = {
+              parent = "lan";
+              interfaces = [ "prt0" ];
+              cidrs = [ ];
+            };
+            web = {
+              parent = "lan";
+              interfaces = [ ];
+              cidrs = [ "10.0.0.5/32" ];
+            };
+          };
+        }
+      ).warnings;
+    expected = [ ];
+  };
+
+  # ===== checkCrossAxisOverlap — iface child of cidr parent skipped =====
+
+  testCheckCrossAxisOverlapIfaceChildOfCidrParentUnrelatedSkipped = {
+    # Mirror of the parented-child case with the axes swapped: `mgmt`
+    # inherits the CIDR axis from its parent, so it is multi-axis and
+    # must not be compared as an interface-only peer of the unrelated
+    # `raw-cidr` root zone.
+    expr =
+      (runEvalPipeline
+        [
+          convertNodesToZones
+          checkCrossAxisOverlap
+        ]
+        {
+          zones = {
+            dbnet = {
+              interfaces = [ ];
+              cidrs = [ "10.9.0.0/24" ];
+            };
+            mgmt = {
+              parent = "dbnet";
+              interfaces = [ "mgmt0" ];
+              cidrs = [ ];
+            };
+            raw-cidr = {
+              interfaces = [ ];
+              cidrs = [ "192.168.0.0/24" ];
+            };
+          };
+        }
+      ).warnings;
+    expected = [ ];
+  };
+
   # ===== checkCrossAxisOverlap — multiple distinct pairs each flagged =====
 
   testCheckCrossAxisOverlapMultiplePairs = {
