@@ -490,6 +490,13 @@
   eth1 plus 10.0.0.0/24") rather than the audit's
   accidentally-split-zone failure mode.
 
+  A zone must contribute at least one own raw axis to participate.
+  Empty grouping zones stay unclassified: their dispatch variants
+  come from descendant-inherited sections, while any overlap from
+  an ancestor's own gate is already reported against that ancestor.
+  Treating the grouping zone as single-axis would duplicate that
+  warning under a misleading zone name.
+
   matchOverride sections are not inspected — users who replace the
   auto match path have opted out of the auto axis and are
   responsible for their own overlap audit. The flag fires on the
@@ -1919,20 +1926,25 @@ let
         interface-AND-address — a multi-axis refinement (the
         canonical `nodes` pattern), not the accidentally-split-zone
         failure mode this audit hunts. Roots reduce to their own raw
-        fields, keeping the original PoC pair flagged.
+        fields, keeping the original PoC pair flagged. Empty grouping
+        zones remain unclassified because they contribute no own axis;
+        their dispatch variants come from inherited descendant sections,
+        and ancestor-axis overlap is already audited at the ancestor.
       */
       axesOf =
         name:
         let
+          own = mergedZones.${name};
           zones = map (z: mergedZones.${z}) ([ name ] ++ walkParents mergedZones name);
         in
         {
+          anchored = (own.interfaces or [ ]) != [ ] || (own.cidrs or [ ]) != [ ];
           iface = lib.any (zone: (zone.interfaces or [ ]) != [ ]) zones;
           cidr = lib.any (zone: (zone.cidrs or [ ]) != [ ]) zones;
         };
 
-      ifaceOnly = axes: axes.iface && !axes.cidr;
-      cidrOnly = axes: axes.cidr && !axes.iface;
+      ifaceOnly = axes: axes.anchored && axes.iface && !axes.cidr;
+      cidrOnly = axes: axes.anchored && axes.cidr && !axes.iface;
 
       # Pair-wise (i < j) walk. Flag the pair iff one zone is
       # interface-only and the other is CIDR-only — i.e. the user

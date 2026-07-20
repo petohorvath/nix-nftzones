@@ -4610,6 +4610,56 @@ in
     expected = [ ];
   };
 
+  # ===== checkCrossAxisOverlap — empty grouping zone stays unclassified =====
+
+  testCheckCrossAxisOverlapEmptyGroupingZoneSkipped = {
+    # `apps` contributes no own match axis. Although its parent is
+    # interface-bound, classifying the empty intermediate itself would
+    # duplicate `lan`'s genuine warning against the unrelated CIDR root.
+    expr =
+      let
+        ws =
+          (runEvalPipeline
+            [
+              convertNodesToZones
+              checkCrossAxisOverlap
+            ]
+            {
+              zones = {
+                lan = {
+                  interfaces = [ "lan0" ];
+                  cidrs = [ ];
+                };
+                apps = {
+                  parent = "lan";
+                  interfaces = [ ];
+                  cidrs = [ ];
+                };
+                raw-cidr = {
+                  interfaces = [ ];
+                  cidrs = [ "192.168.0.0/24" ];
+                };
+                web = {
+                  parent = "apps";
+                  interfaces = [ ];
+                  cidrs = [ "10.0.0.5/32" ];
+                };
+              };
+            }
+          ).warnings;
+      in
+      {
+        count = lib.length ws;
+        flagsRoots = lib.any (w: lib.hasInfix "lan" w && lib.hasInfix "raw-cidr" w) ws;
+        flagsGroupingZone = lib.any (w: lib.hasInfix "apps" w) ws;
+      };
+    expected = {
+      count = 1;
+      flagsRoots = true;
+      flagsGroupingZone = false;
+    };
+  };
+
   # ===== checkCrossAxisOverlap — multiple distinct pairs each flagged =====
 
   testCheckCrossAxisOverlapMultiplePairs = {
