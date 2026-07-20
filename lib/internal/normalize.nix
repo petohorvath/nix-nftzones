@@ -470,14 +470,24 @@
   the iface-zone is shadowed by a drop on the cidr-zone because
   the cidr-zone sorts first.
 
-  Pair-wise comparison. Flags any pair where one zone is
-  *strictly* interface-only (interfaces non-empty, cidrs empty)
-  and the other is *strictly* CIDR-only (vice versa), excluding
-  pairs in an ancestor/descendant relation (parent/child overlap
-  is intentional — the canonical case is a node lowered into its
-  parent zone). Multi-axis zones (a zone with both interfaces and
-  CIDRs) are not flagged: they're the typical real-world pattern
-  ("lan = eth1 plus 10.0.0.0/24") rather than the audit's
+  Pair-wise comparison. Classifies each zone by its effective
+  dispatch axes: its own raw fields plus every strict ancestor's.
+  Descendants never dispatch directly from the base chain; Phase
+  4's `mkRootJumpRules` emits root-zone jumps only, and
+  `mkChildDispatchJumpRules` reaches descendants through their
+  ancestors' sub-chains. Every ancestor's own match therefore ANDs
+  into the path before the descendant's own match applies. A
+  CIDR-only node lowered into an interface-bound parent is
+  effectively interface-and-CIDR bound, not an accidentally split
+  zone.
+
+  Flags any pair where one effective path is *strictly*
+  interface-only and the other is *strictly* CIDR-only (vice
+  versa), excluding pairs in an ancestor/descendant relation as a
+  belt-and-braces guard. Roots reduce to their own raw fields, so
+  the original split-root PoC remains flagged. Multi-axis zones
+  are not flagged: they're the typical real-world pattern ("lan =
+  eth1 plus 10.0.0.0/24") rather than the audit's
   accidentally-split-zone failure mode.
 
   matchOverride sections are not inspected — users who replace the
@@ -1897,12 +1907,32 @@ let
       zoneNames = builtins.attrNames mergedZones;
       n = builtins.length zoneNames;
 
-      # Strict single-axis: zone matches by interfaces only or by
-      # cidrs only — never both. Multi-axis zones (iface + cidr
-      # together) are the typical pattern in real configs and are
-      # not the failure mode the audit's PoC exercised.
-      ifaceOnly = zone: zone.interfaces != [ ] && zone.cidrs == [ ];
-      cidrOnly = zone: zone.cidrs != [ ] && zone.interfaces == [ ];
+      /*
+        Effective axes of a zone's dispatch path: its own raw
+        fields plus every strict ancestor's. A descendant zone is
+        never dispatched from the base chain (Phase 4's
+        `mkRootJumpRules` emits root-zone jumps only); its rules are
+        reached through its ancestors' sub-chain dispatch, so every
+        ancestor's own match ANDs into the packet's path before the
+        zone's own match applies. A CIDR-only node lowered into an
+        interface-bound parent is therefore effectively
+        interface-AND-address — a multi-axis refinement (the
+        canonical `nodes` pattern), not the accidentally-split-zone
+        failure mode this audit hunts. Roots reduce to their own raw
+        fields, keeping the original PoC pair flagged.
+      */
+      axesOf =
+        name:
+        let
+          zones = map (z: mergedZones.${z}) ([ name ] ++ walkParents mergedZones name);
+        in
+        {
+          iface = lib.any (zone: (zone.interfaces or [ ]) != [ ]) zones;
+          cidr = lib.any (zone: (zone.cidrs or [ ]) != [ ]) zones;
+        };
+
+      ifaceOnly = axes: axes.iface && !axes.cidr;
+      cidrOnly = axes: axes.cidr && !axes.iface;
 
       # Pair-wise (i < j) walk. Flag the pair iff one zone is
       # interface-only and the other is CIDR-only — i.e. the user
@@ -1918,8 +1948,8 @@ let
           let
             aName = builtins.elemAt zoneNames i;
             bName = builtins.elemAt zoneNames j;
-            a = mergedZones.${aName};
-            b = mergedZones.${bName};
+            a = axesOf aName;
+            b = axesOf bName;
           in
           if crossAxisPair a b && !(relatedByHierarchy mergedZones aName bName) then
             [
