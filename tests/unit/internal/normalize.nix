@@ -4506,6 +4506,232 @@ in
     expected = [ ];
   };
 
+  # ===== checkCrossAxisOverlap — parented child vs unrelated zone skipped =====
+
+  testCheckCrossAxisOverlapParentedChildUnrelatedSkipped = {
+    # A child is reached only after its parent's interface gate matched,
+    # making `web` effectively interface-and-CIDR bound. It must not be
+    # compared as a CIDR-only peer of the unrelated `vpn` root zone.
+    expr =
+      (runEvalPipeline
+        [
+          convertNodesToZones
+          checkCrossAxisOverlap
+        ]
+        {
+          zones = {
+            lan = {
+              interfaces = [ "lan0" ];
+              cidrs = [ ];
+            };
+            vpn = {
+              interfaces = [ "vpn0" ];
+              cidrs = [ ];
+            };
+            web = {
+              parent = "lan";
+              interfaces = [ ];
+              cidrs = [ "10.0.0.5/32" ];
+            };
+          };
+        }
+      ).warnings;
+    expected = [ ];
+  };
+
+  # ===== checkCrossAxisOverlap — lowered node vs unrelated zone skipped =====
+
+  testCheckCrossAxisOverlapLoweredNodeUnrelatedSkipped = {
+    # Pin the public `nodes` shape: `convertNodesToZones` lowers `web`
+    # to a CIDR-only child of `lan`, whose effective dispatch path is
+    # still interface-and-CIDR bound.
+    expr =
+      (runEvalPipeline
+        [
+          convertNodesToZones
+          checkCrossAxisOverlap
+        ]
+        {
+          zones = {
+            lan = {
+              interfaces = [ "lan0" ];
+              cidrs = [ ];
+            };
+            vpn = {
+              interfaces = [ "vpn0" ];
+              cidrs = [ ];
+            };
+          };
+          nodes.web = {
+            name = "web";
+            zone = "lan";
+            address.ipv4 = "10.0.0.5";
+          };
+        }
+      ).warnings;
+    expected = [ ];
+  };
+
+  # ===== checkCrossAxisOverlap — grandchild inherits transitive axes =====
+
+  testCheckCrossAxisOverlapGrandchildUnrelatedSkipped = {
+    # `web` inherits the interface axis through the otherwise-empty `apps`
+    # grouping zone, proving that effective-axis classification walks every
+    # strict ancestor rather than only the immediate parent.
+    expr =
+      (runEvalPipeline
+        [
+          convertNodesToZones
+          checkCrossAxisOverlap
+        ]
+        {
+          zones = {
+            lan = {
+              interfaces = [ "lan0" ];
+              cidrs = [ ];
+            };
+            vpn = {
+              interfaces = [ "vpn0" ];
+              cidrs = [ ];
+            };
+            apps = {
+              parent = "lan";
+              interfaces = [ ];
+              cidrs = [ ];
+            };
+            web = {
+              parent = "apps";
+              interfaces = [ ];
+              cidrs = [ "10.0.0.5/32" ];
+            };
+          };
+        }
+      ).warnings;
+    expected = [ ];
+  };
+
+  # ===== checkCrossAxisOverlap — empty grouping zone stays unclassified =====
+
+  testCheckCrossAxisOverlapEmptyGroupingZoneSkipped = {
+    # `apps` contributes no own match axis. Although its parent is
+    # interface-bound, classifying the empty intermediate itself would
+    # duplicate `lan`'s genuine warning against the unrelated CIDR root.
+    expr =
+      let
+        ws =
+          (runEvalPipeline
+            [
+              convertNodesToZones
+              checkCrossAxisOverlap
+            ]
+            {
+              zones = {
+                lan = {
+                  interfaces = [ "lan0" ];
+                  cidrs = [ ];
+                };
+                apps = {
+                  parent = "lan";
+                  interfaces = [ ];
+                  cidrs = [ ];
+                };
+                raw-cidr = {
+                  interfaces = [ ];
+                  cidrs = [ "192.168.0.0/24" ];
+                };
+                web = {
+                  parent = "apps";
+                  interfaces = [ ];
+                  cidrs = [ "10.0.0.5/32" ];
+                };
+              };
+            }
+          ).warnings;
+      in
+      {
+        count = lib.length ws;
+        flagsRoots = lib.any (w: lib.hasInfix "lan" w && lib.hasInfix "raw-cidr" w) ws;
+        flagsGroupingZone = lib.any (w: lib.hasInfix "apps" w) ws;
+      };
+    expected = {
+      count = 1;
+      flagsRoots = true;
+      flagsGroupingZone = false;
+    };
+  };
+
+  # ===== checkCrossAxisOverlap — same-parent siblings split across axes =====
+
+  testCheckCrossAxisOverlapSiblingSplitAxesNotFlagged = {
+    # Pins a deliberate narrowing: `printers` (iface-only) and `web`
+    # (cidr-only) sit under the same interface-bound parent, so `web`
+    # classifies as multi-axis via the inherited interface axis and the
+    # sibling pair goes unflagged — even though key-order shadowing can
+    # still occur among the child-dispatch jumps inside `lan`'s
+    # sub-chain. See the checkCrossAxisOverlap header for the finer
+    # deepest-common-ancestor model this trades away.
+    expr =
+      (runEvalPipeline
+        [
+          convertNodesToZones
+          checkCrossAxisOverlap
+        ]
+        {
+          zones = {
+            lan = {
+              interfaces = [ "lan0" ];
+              cidrs = [ ];
+            };
+            printers = {
+              parent = "lan";
+              interfaces = [ "prt0" ];
+              cidrs = [ ];
+            };
+            web = {
+              parent = "lan";
+              interfaces = [ ];
+              cidrs = [ "10.0.0.5/32" ];
+            };
+          };
+        }
+      ).warnings;
+    expected = [ ];
+  };
+
+  # ===== checkCrossAxisOverlap — iface child of cidr parent skipped =====
+
+  testCheckCrossAxisOverlapIfaceChildOfCidrParentUnrelatedSkipped = {
+    # Mirror of the parented-child case with the axes swapped: `mgmt`
+    # inherits the CIDR axis from its parent, so it is multi-axis and
+    # must not be compared as an interface-only peer of the unrelated
+    # `raw-cidr` root zone.
+    expr =
+      (runEvalPipeline
+        [
+          convertNodesToZones
+          checkCrossAxisOverlap
+        ]
+        {
+          zones = {
+            dbnet = {
+              interfaces = [ ];
+              cidrs = [ "10.9.0.0/24" ];
+            };
+            mgmt = {
+              parent = "dbnet";
+              interfaces = [ "mgmt0" ];
+              cidrs = [ ];
+            };
+            raw-cidr = {
+              interfaces = [ ];
+              cidrs = [ "192.168.0.0/24" ];
+            };
+          };
+        }
+      ).warnings;
+    expected = [ ];
+  };
+
   # ===== checkCrossAxisOverlap — multiple distinct pairs each flagged =====
 
   testCheckCrossAxisOverlapMultiplePairs = {

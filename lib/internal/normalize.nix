@@ -470,15 +470,56 @@
   the iface-zone is shadowed by a drop on the cidr-zone because
   the cidr-zone sorts first.
 
-  Pair-wise comparison. Flags any pair where one zone is
-  *strictly* interface-only (interfaces non-empty, cidrs empty)
-  and the other is *strictly* CIDR-only (vice versa), excluding
-  pairs in an ancestor/descendant relation (parent/child overlap
-  is intentional — the canonical case is a node lowered into its
-  parent zone). Multi-axis zones (a zone with both interfaces and
-  CIDRs) are not flagged: they're the typical real-world pattern
-  ("lan = eth1 plus 10.0.0.0/24") rather than the audit's
-  accidentally-split-zone failure mode.
+  Pair-wise comparison. Classifies each zone by its effective
+  dispatch axes: its own raw fields plus every strict ancestor's.
+  Two grounds, one structural and one declarative:
+
+  Structural — from-side dispatch is hierarchical. Phase 4's
+  `mkRootJumpRules` emits base-chain jumps only for root *from*
+  zones, and `mkChildDispatchJumpRules` reaches from-side
+  descendants through their ancestors' sub-chains, so every
+  ancestor's own match ANDs into the path before the descendant's
+  own match applies. A CIDR-only node lowered into an
+  interface-bound parent is effectively interface-and-CIDR bound
+  on that side. To-side dispatch is flat: a descendant referenced
+  as `to` is gated at the base chain by its own sections alone
+  (ancestor content never flows down into the `@<zone>_*` sets),
+  so a cross-axis packet can still shadow there — e.g. a packet
+  egressing the unrelated zone's interface toward the node's
+  address matches both jump gates.
+
+  Declarative — parenting states intent. A zone declared (or
+  lowered) under an ancestor is a deliberate refinement of that
+  ancestor's network, so it cannot be the *accidental* split of an
+  unrelated zone this audit hunts; the same reading is why
+  `checkInterfaceOverlap` / `checkCidrOverlap` skip related pairs.
+  The residual to-side shadowing above is accepted: warning on it
+  would re-flag every node against every unrelated interface-only
+  zone — the false positive effective-axis classification exists
+  to remove.
+
+  Flags any pair where one effective path is *strictly*
+  interface-only and the other is *strictly* CIDR-only (vice
+  versa), excluding pairs in an ancestor/descendant relation as a
+  belt-and-braces guard. Roots reduce to their own raw fields, so
+  the original split-root PoC remains flagged. Multi-axis zones
+  are not flagged: they're the typical real-world pattern ("lan =
+  eth1 plus 10.0.0.0/24") rather than the audit's
+  accidentally-split-zone failure mode. A consequence: siblings
+  under one parent go unflagged even when their own axes are
+  split — the CIDR child inherits the shared ancestor's interface
+  axis. Key-order shadowing can still occur among the
+  child-dispatch jumps inside the ancestor's sub-chain; a finer
+  model would compare axes accumulated below the deepest common
+  ancestor (it degenerates to this one for unrelated roots).
+  Accepted for now as a rare pattern in a warning-only audit.
+
+  A zone must contribute at least one own raw axis to participate.
+  Empty grouping zones stay unclassified: their dispatch variants
+  come from descendant-inherited sections, while any overlap from
+  an ancestor's own gate is already reported against that ancestor.
+  Treating the grouping zone as single-axis would duplicate that
+  warning under a misleading zone name.
 
   matchOverride sections are not inspected — users who replace the
   auto match path have opted out of the auto axis and are
@@ -1897,12 +1938,47 @@ let
       zoneNames = builtins.attrNames mergedZones;
       n = builtins.length zoneNames;
 
-      # Strict single-axis: zone matches by interfaces only or by
-      # cidrs only — never both. Multi-axis zones (iface + cidr
-      # together) are the typical pattern in real configs and are
-      # not the failure mode the audit's PoC exercised.
-      ifaceOnly = zone: zone.interfaces != [ ] && zone.cidrs == [ ];
-      cidrOnly = zone: zone.cidrs != [ ] && zone.interfaces == [ ];
+      /*
+        Effective axes of a zone's *from-side* dispatch path: its
+        own raw fields plus every strict ancestor's. From-side
+        descendant dispatch is hierarchical (Phase 4's
+        `mkRootJumpRules` emits base-chain jumps for root from-zones
+        only; `mkChildDispatchJumpRules` narrows into descendants
+        inside ancestor sub-chains), so every ancestor's own match
+        ANDs into the packet's path before the zone's own match
+        applies — a CIDR-only node lowered into an interface-bound
+        parent is effectively interface-AND-address there, the
+        canonical `nodes` refinement rather than the
+        accidentally-split-zone failure mode this audit hunts.
+        To-side dispatch is flat (own sections only, straight from
+        the base chain); suppression on that side rests on the
+        parent declaration marking the overlap as intentional — see
+        the `checkCrossAxisOverlap` module-header block for the full
+        rationale and the accepted residual. Roots reduce to their
+        own raw fields, keeping the original PoC pair flagged. Empty
+        grouping zones remain unclassified because they contribute
+        no own axis; their dispatch variants come from inherited
+        descendant sections, and ancestor-axis overlap is already
+        audited at the ancestor.
+      */
+      axesOf =
+        name:
+        let
+          own = mergedZones.${name};
+          zones = map (z: mergedZones.${z}) ([ name ] ++ walkParents mergedZones name);
+        in
+        {
+          anchored = (own.interfaces or [ ]) != [ ] || (own.cidrs or [ ]) != [ ];
+          iface = lib.any (zone: (zone.interfaces or [ ]) != [ ]) zones;
+          cidr = lib.any (zone: (zone.cidrs or [ ]) != [ ]) zones;
+        };
+
+      # Forced once per zone; the O(n²) pair walk below then reads
+      # each classification instead of re-walking the ancestor chain.
+      zoneAxes = lib.mapAttrs (name: _: axesOf name) mergedZones;
+
+      ifaceOnly = axes: axes.anchored && axes.iface && !axes.cidr;
+      cidrOnly = axes: axes.anchored && axes.cidr && !axes.iface;
 
       # Pair-wise (i < j) walk. Flag the pair iff one zone is
       # interface-only and the other is CIDR-only — i.e. the user
@@ -1918,8 +1994,8 @@ let
           let
             aName = builtins.elemAt zoneNames i;
             bName = builtins.elemAt zoneNames j;
-            a = mergedZones.${aName};
-            b = mergedZones.${bName};
+            a = zoneAxes.${aName};
+            b = zoneAxes.${bName};
           in
           if crossAxisPair a b && !(relatedByHierarchy mergedZones aName bName) then
             [

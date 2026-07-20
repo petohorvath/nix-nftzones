@@ -119,7 +119,7 @@ allZones = [ "lan" "wan" "dmz" "local" ]
 
 ### 1.3 Validation
 
-Fourteen validators run after the compute phases, all in `internal/normalize.nix`. Each appends `lib.nameValuePair "<errorTag>" <message>` records to `ctx.errors` (or warning strings to `ctx.warnings`); the orchestrator aggregates errors and throws a single message listing every one, so users see all problems in one pass.
+Validators run after the compute phases, all in `internal/normalize.nix`. Each appends `lib.nameValuePair "<errorTag>" <message>` records to `ctx.errors` (or warning strings to `ctx.warnings`); the orchestrator aggregates errors and throws a single message listing every one, so users see all problems in one pass.
 
 - **`checkParentRefs`** — every non-null `zone.parent` must resolve to a zone in `ctx.mergedZones` and must not equal `settings.localZone`.
 - **`checkParentCycles`** — the parent chain must be acyclic.
@@ -134,6 +134,7 @@ Fourteen validators run after the compute phases, all in `internal/normalize.nix
 - **`checkSetNameCollisions`** — user `objects.sets.<name>` must not collide with auto-generated zone-derived set names (`<zone>_iifs|v4|v6`).
 - **`checkInterfaceOverlap`** — distinct zones must not claim the same interface (ambiguous dispatch); ancestor/descendant pairs are skipped (intentional sharing in a zone hierarchy), and intra-zone duplicates in the `interfaces` list are also flagged.
 - **`checkCidrOverlap`** — distinct zones must not have overlapping CIDR prefixes (ambiguous dispatch); ancestor/descendant pairs are skipped (intentional containment, e.g. a node lowered into its parent zone), and intra-zone overlapping CIDRs are also flagged. Family-aware via `libnet.cidr.overlaps` (v4 vs v6 never overlap).
+- **`checkCrossAxisOverlap`** — warning, not an error: flags pairs of unrelated zones whose effective from-side dispatch axes are strictly split — one interface-only, the other CIDR-only — since both may match the same packet and alphabetical jump order then silently shadows the loser. Effective axes are a zone's own fields plus every strict ancestor's (from-side descendant dispatch rides through ancestor sub-chains), so a CIDR-only node under an interface-bound parent is multi-axis rather than an accidental split; multi-axis zones, ancestor/descendant pairs, and zones with no own axis (empty grouping zones) are not flagged.
 - **`checkObjectRefs`** — every named-object reference in entry rule bodies, zone matchOverride content, and object bodies must resolve to a key in `table.objects.<kind>` (or — for `kind == "sets"` — a zone-derived set name). The walker lives in `internal/refs.nix`.
 
 ## Phase 2: expand
